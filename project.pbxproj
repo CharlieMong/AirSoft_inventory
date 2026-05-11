@@ -1,0 +1,248 @@
+import SwiftUI
+
+struct ContentView: View {
+    @EnvironmentObject var store: GunStore
+    @State private var selectedGunID: UUID?
+    @State private var showingAddSheet = false
+    @State private var searchText = ""
+    @State private var filterType: GunType? = nil
+
+    var filteredGuns: [AirsoftGun] {
+        store.guns.filter { gun in
+            let matchesSearch = searchText.isEmpty ||
+                gun.name.localizedCaseInsensitiveContains(searchText) ||
+                gun.brand.localizedCaseInsensitiveContains(searchText)
+            let matchesFilter = filterType == nil || gun.type == filterType
+            return matchesSearch && matchesFilter
+        }
+    }
+
+    var selectedGun: AirsoftGun? {
+        store.guns.first { $0.id == selectedGunID }
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            SidebarView(
+                guns: filteredGuns,
+                selectedGunID: $selectedGunID,
+                searchText: $searchText,
+                filterType: $filterType,
+                onAdd: { showingAddSheet = true }
+            )
+            .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 300)
+        } detail: {
+            if let gun = selectedGun {
+                GunDetailView(gun: gun)
+            } else {
+                EmptyDetailView(onAdd: { showingAddSheet = true })
+            }
+        }
+        .sheet(isPresented: $showingAddSheet) {
+            GunFormView(mode: .add) { newGun in
+                store.add(newGun)
+                selectedGunID = newGun.id
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .addGun)) { _ in
+            showingAddSheet = true
+        }
+    }
+}
+
+// MARK: - Sidebar
+
+struct SidebarView: View {
+    @EnvironmentObject var store: GunStore
+    let guns: [AirsoftGun]
+    @Binding var selectedGunID: UUID?
+    @Binding var searchText: String
+    @Binding var filterType: GunType?
+    let onAdd: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Stats bar
+            HStack(spacing: 0) {
+                SidebarStat(label: "GUNS", value: "\(store.guns.count)")
+                Divider().frame(height: 30)
+                SidebarStat(label: "MAGS", value: "\(store.totalMagazines)")
+                Divider().frame(height: 30)
+                SidebarStat(label: "VALUE", value: store.totalValue > 0 ? "£\(Int(store.totalValue))" : "—")
+            }
+            .frame(height: 52)
+            .background(Color(nsColor: .controlBackgroundColor))
+
+            Divider()
+
+            // Filter chips
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    FilterChip(label: "All", isSelected: filterType == nil) {
+                        filterType = nil
+                    }
+                    ForEach(GunType.allCases) { type in
+                        FilterChip(label: type.rawValue, isSelected: filterType == type) {
+                            filterType = filterType == type ? nil : type
+                        }
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+            }
+
+            Divider()
+
+            // Gun list
+            List(guns, selection: $selectedGunID) { gun in
+                GunRowView(gun: gun)
+                    .tag(gun.id)
+                    .contextMenu {
+                        Button("Delete", role: .destructive) {
+                            store.delete(gun)
+                            if selectedGunID == gun.id { selectedGunID = nil }
+                        }
+                    }
+            }
+            .listStyle(.sidebar)
+            .searchable(text: $searchText, placement: .sidebar, prompt: "Search arsenal…")
+
+            Divider()
+
+            // Bottom toolbar
+            HStack {
+                Button(action: onAdd) {
+                    Label("Add Gun", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                .foregroundColor(.accentColor)
+                Spacer()
+                Text("\(guns.count) weapon\(guns.count == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .navigationTitle("Arsenal")
+    }
+}
+
+struct SidebarStat: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text(value)
+                .font(.system(.headline, design: .monospaced))
+                .fontWeight(.semibold)
+            Text(label)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundColor(.secondary)
+                .tracking(1.5)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+struct FilterChip: View {
+    let label: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.caption)
+                .fontWeight(isSelected ? .semibold : .regular)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
+                .foregroundColor(isSelected ? .accentColor : .secondary)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(isSelected ? Color.accentColor.opacity(0.5) : Color.secondary.opacity(0.3), lineWidth: 1)
+                )
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct GunRowView: View {
+    let gun: AirsoftGun
+
+    var statusColor: Color {
+        switch gun.status {
+        case .operational: return .green
+        case .maintenance: return .orange
+        case .retired:     return .red
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 7, height: 7)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(gun.name.isEmpty ? "Unnamed Gun" : gun.name)
+                    .font(.system(.body, design: .default))
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+
+                HStack(spacing: 6) {
+                    Label(gun.type.rawValue, systemImage: gun.type.icon)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+
+                    if let fps = gun.fps {
+                        Text("·")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text("\(fps) FPS")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            Spacer()
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Empty State
+
+struct EmptyDetailView: View {
+    let onAdd: () -> Void
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "target")
+                .font(.system(size: 56))
+                .foregroundColor(.secondary.opacity(0.4))
+
+            VStack(spacing: 6) {
+                Text("No Gun Selected")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Text("Select a gun from the sidebar or add your first weapon to the arsenal.")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 300)
+            }
+
+            Button(action: onAdd) {
+                Label("Add First Gun", systemImage: "plus.circle.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
